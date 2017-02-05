@@ -1,3 +1,8 @@
+// Consistent Hash Ring implementation
+// HTTP service to create/query CHR
+// Copyright Jan 2017
+// Author: Abhijeet Gole
+
 package main
 
 import (

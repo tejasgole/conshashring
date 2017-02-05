@@ -1,4 +1,7 @@
 // single-writer in-memory B+ tree implementation
+// Copyright Jan 2017
+// Author: Abhijeet Gole
+
 // uncomment for testing
 //package main
 package bptree
@@ -6,9 +9,10 @@ package bptree
 import (
 	"errors"
 	"fmt"
-	//"math/rand"	//Uncomment for test
+//	"math/rand"	//Uncomment for test
 	"strconv"
-	//"os"		//Uncomment for test
+//	"os"		//Uncomment for test
+//	"bufio"		//Uncomment for test
 )
 
 type Item uint64	// key
@@ -114,14 +118,22 @@ func (n *node) get(key Item) string {
 func (n *node) sibling() *node {
 	p := n.prev
 	q := n.next
-	if n.parent == q.parent {
+	// if pointing to itself, then no sibling
+	if p == n {
+		return nil
+	}
+	// check prev node first
+	if n.parent == p.parent && p.keys[0] < n.keys[0] {
+		return p
+	}
+	if n.parent == q.parent && q.keys[0] > n.keys[0] {
 		return q
 	}
-	return p
+	return nil
 }
 
 // remove key,value pair from leaf
-func (n *node) removeKey(idx int) {
+func (n *node) removeKey(idx int) *node {
 	nks := make(items, len(n.keys)-1)
 	nvs := make([]string, len(n.vals)-1)
 	if idx == 0 {
@@ -137,11 +149,15 @@ func (n *node) removeKey(idx int) {
 		copy(nvs[idx:], n.vals[idx+1:])
 		n.vals = nvs
 	}
+	if len(n.keys) == 0 {
+		return nil
+	}
+	return n
 }
 
 // redistribute key,vals
 // sib has more keys
-func (n *node) redistribLeaf(idx int, sib *node, maxk int) {
+func (n *node) redistribLeaf(sib *node, maxk int) {
 	if n.keys[0] > sib.keys[0] {
 		// redistribute len(sib)-maxk/2 keys from sib into n
 		sks := make(items, maxk/2)
@@ -165,7 +181,7 @@ func (n *node) redistribLeaf(idx int, sib *node, maxk int) {
 		copy(nks, n.keys)
 		nks = append(nks, sib.keys[:maxk/2]...)
 		n.keys = nks
-		nvs := make([]string, maxk/2)
+		nvs := make([]string, len(n.vals))
 		copy(nvs, n.vals)
 		nvs = append(nvs, sib.vals[:maxk/2]...)
 		n.vals = nvs
@@ -180,43 +196,237 @@ func (n *node) redistribLeaf(idx int, sib *node, maxk int) {
 }
 
 // fix key in parent internal node after children keys are redistrib'd
-func (n *node) fixup(key Item) {
-	for i:=0; i < len(n.keys); i++ {
-		if n.keys[i] != n.children[i+1].keys[0] {
-			n.keys[i] = n.children[i+1].keys[0]
+func (n *node) fixup(sib *node) {
+	for i:=0; i < len(n.children); i++ {
+		if n.children[i] == sib {
+			if i == 0 {
+				return
+			}
+			n.keys[i-1] = n.children[i].minKey()
 			return
 		}
 	}
 }
 
+// replace sib with n in parent "p" 
+// during merging of two siblings after key delete
+func (p *node) replaceChild(root, n, sib *node, maxk int) *node {
+	sibIdx := -1
+	nIdx := -1
+	// find positions of n & sib
+	for i:=0; i < len(p.children); i++ {
+		if p.children[i] == sib {
+			sibIdx = i
+		}
+		if p.children[i] == n {
+			nIdx = i
+		}
+		if sibIdx >= 0 && nIdx >= 0 {
+			break
+		}
+	}
+	pks := make(items, len(p.keys)-1)
+	pcs := make([]*node, len(p.children)-1)
+	if nIdx < sibIdx {
+		if sibIdx > len(p.keys) {
+			// just remove sib by truncation
+			copy(pks, p.keys[:nIdx])
+			p.keys = pks
+			copy(pcs, p.children[:sibIdx])
+			p.children = pcs
+		} else {
+			// remove child sib by shifting all children left
+			copy(pks, p.keys[:nIdx])
+			copy(pks[nIdx:], p.keys[sibIdx:])
+			p.keys = pks
+			copy(pcs, p.children[:sibIdx])
+			copy(pcs[sibIdx:], p.children[sibIdx+1:])
+			p.children = pcs
+		}
+	} else  {
+		if nIdx > len(p.keys) {
+			// replace sib by n
+			p.children[sibIdx] = n
+			pks[len(p.keys)-2] = n.keys[0]
+			p.keys = pks
+			copy(pcs, p.children[:nIdx])
+			p.children = pcs
+		} else {
+			// replace child sib and shift all children left
+			copy(pks, p.keys[nIdx:])
+			p.keys = pks
+			copy(pcs, p.children[:nIdx])
+			copy(pcs[nIdx:], p.children[nIdx+1:])
+			p.children = pcs
+		}
+	}
+	// fix parent links
+	for i:=0; i < len(p.children); i++ {
+		p.children[i].parent = p
+	}
+	if len(p.keys) < maxk/2 {
+		if len(p.keys) == 0 {
+			p.children[0].parent = nil
+			return p.children[0]
+		}
+		psib := p.sibling()
+		if psib == nil {
+			// no sibling=> p is root
+			return p
+		}
+		r := p.mergeSib(root, psib, maxk)
+		if r != root {
+			return r
+		}
+	}
+	return root
+}
+
+// merge node with sibling and insert new child into parent
+// return new root if merge propagate to root
+func (n *node) mergeSib(root *node, sib *node, maxk int) *node {
+	var A, B *node
+
+	if sib.keys[0] > n.keys[0] {
+		// merge sib into n
+		if n.leaf {
+			// copy keys,values
+			nks := make(items, len(n.keys))
+			copy(nks, n.keys)
+			nks = append(nks, sib.keys...)
+			n.keys = nks
+			nvs := make([]string, len(n.vals))
+			copy(nvs, n.vals)
+			nvs = append(nvs, sib.vals...)
+			n.vals = nvs
+		} else {
+			// copy children
+			ncs := make([]*node, len(n.children))
+			copy(ncs, n.children)
+			ncs = append(ncs, sib.children...)
+			n.children = ncs
+			// fix keys
+			nks := make(items, len(n.children)-1)
+			for i:=1; i<len(n.children); i++ {
+				nks[i-1] = n.children[i].minKey()
+			}
+			n.keys = nks
+			// fix parent links
+			for i:=0; i < len(n.children); i++ {
+				n.children[i].parent = n
+			}
+		}
+		sib.next.prev = n
+		n.next = sib.next
+		A = n
+		B = sib
+	} else {
+		// merge n into sib
+		if n.leaf {
+			// copy keys,values
+			sks := make(items, len(sib.keys))
+			copy(sks, sib.keys)
+			sks = append(sks, n.keys...)
+			sib.keys = sks
+			svs := make([]string, len(sib.vals))
+			copy(svs, sib.vals)
+			svs = append(svs, n.vals...)
+			sib.vals = svs
+		} else {
+			// copy children
+			scs := make([]*node, len(sib.children))
+			copy(scs, sib.children)
+			scs = append(scs, n.children...)
+			sib.children = scs
+			// fix keys
+			sks := make(items, len(sib.children)-1)
+			for i:=1; i<len(sib.children); i++ {
+				sks[i-1] = sib.children[i].minKey()
+			}
+			sib.keys = sks
+			// fix parent links
+			for i:=0; i < len(sib.children); i++ {
+				sib.children[i].parent = sib
+			}
+		}
+		n.next.prev = sib
+		sib.next = n.next
+		A = sib
+		B = n
+	}
+	// remove B from parent & add A to parent
+	return n.parent.replaceChild(root, A, B, maxk)
+}
+
 // delete key from tree starting at leaf
-func (n* node) del(key Item, maxk int) (bool, string) {
+func (n* node) del(key Item, maxk int) (bool, string, *node) {
+	root := n
 	n = n.findLeaf(key)
 	idx, found := n.keys.find(key)
 	if !found {
-		return false, ""
+		return false, "", root
 	}
 	// found key,value pair in leaf
 	retval := n.vals[idx]
 
-	// check if deletion will lead to too few keys in node
-	if (len(n.keys)-1) <= maxk/2 {
+	// check if key deletion will lead to too few keys in node
+	if (len(n.keys)-1) < maxk/2 {
 		sib := n.sibling()
+		if sib == nil {
+			goto done
+		}
 		if len(sib.keys) > maxk/2 {
 			// remove key from n
 			n.removeKey(idx)
-			// redistribute with sibling
-			n.redistribLeaf(idx, sib, maxk)
+			// redistribute with sibling if anything left
+			if len(n.keys) > 0 {
+				n.redistribLeaf(sib, maxk)
+			} else {
+				// delete n from link-list
+				if sib.next == n {
+					n.next.prev = sib
+					sib.next = n.next
+				} else {
+					n.prev.next = sib
+					sib.prev = n.prev
+				}
+				// remove n from parent
+				r := n.parent.replaceChild(root, sib, n, maxk)
+				if r != root {
+					return true, retval, r
+				} else {
+					return true, retval, root
+				}
+			}
 			// fixup parent key
-			n.parent.fixup(key)
+			if sib.keys[0] > n.keys[0] {
+				n.parent.fixup(sib)
+			} else {
+				n.parent.fixup(n)
+			}
+			return true, retval, root
 		} else {
-		//remove & merge with sibling
+			//remove & merge with sibling
+			n.removeKey(idx)
+			r := n.mergeSib(root, sib, maxk)
+			if r != root {
+				return true, retval, r
+			} else {
+				return true, retval, root
+			}
 		}
-		return true, retval
 	}
+done:
 	// remove k,v pair
-	n.removeKey(idx)
-	return true, retval
+	r := n.removeKey(idx)
+	// fixup parent key
+	if n.parent != nil {
+		n.parent.fixup(n)
+	}
+	if r == nil {
+		return true, retval, nil
+	}
+	return true, retval, root
 }
 
 // return min key in the tree
@@ -276,7 +486,7 @@ func (n *node) insertDir(lchld *node, rchld *node, maxk int) *node {
 		n.children[1] = rchld
 		n.keys = append(n.keys, rchld.minKey())
 	} else {
-		idx, _ := n.keys.find(rchld.keys[0])
+		idx, _ := n.keys.find(rchld.minKey())
 		switch idx {
 		case len(n.keys):
 			// Append rchld key
@@ -304,13 +514,17 @@ func (n *node) insertDir(lchld *node, rchld *node, maxk int) *node {
 		// link siblings
 		n.linkSiblings(newnd)
 
-		// insert into parent of internal node
 		if n.parent == nil {
+			// create new parent of internal node
 			n.parent = new(node)
 			newnd.parent = n.parent
+			// link parent to itself
+			n.parent.prev = n.parent
+			n.parent.next = n.parent
 			n.parent.level = (n.level + 1)
 			newn = n.parent.insertDir(n, newnd, maxk)
 		} else {
+			// insert into parent of internal node
 			newnd.parent = n.parent
 			newn = n.parent.insertDir(n, newnd, maxk)
 		}
@@ -395,13 +609,14 @@ func (n *node) split() *node {
 		nn.leaf = true
 	} else {
 		// distribute children
-		nn.children = make([]*node, p)
-		copy(nn.children, n.children[p+1:])
-		ncs := make([]*node, p+1)
-		copy(ncs, n.children[:p+1])
+		q := len(n.children)/2
+		nn.children = make([]*node, len(n.children[q:]))
+		copy(nn.children, n.children[q:])
+		ncs := make([]*node, q)
+		copy(ncs, n.children[:q])
 		n.children = ncs
 		// distribute keys
-		nn.keys = make([]Item, p-1)
+		nn.keys = make([]Item, len(n.keys[p:])-1)
 		copy(nn.keys, n.keys[p+1:])
 		nks := make([]Item, p)
 		copy(nks, n.keys[:p])
@@ -482,7 +697,7 @@ func (tree *Bptree) Insert(key Item, value string) Item {
 	} else {
 		tree.root = tree.root.insert(key, value, nil, nil, tree.degree)
 	}
-	//tree.Print()
+	tree.Print()
 	return key
 }
 
@@ -491,7 +706,10 @@ func (tree *Bptree) Del(key Item) (bool, string) {
 	if tree.root == nil {
 		return false, ""
 	}
-	return tree.root.del(key, tree.degree)
+	var b bool
+	var s string
+	b, s, tree.root = tree.root.del(key, tree.degree)
+	return b, s
 }
 
 // get value at key
@@ -513,6 +731,7 @@ func (tree *Bptree) GetNextN (key Item, N int) []string {
 // print the whole tree
 func (tree *Bptree) Print() {
 	if tree.root == nil {
+		fmt.Println("Empty")
 		return
 	}
 	fmt.Println("Min:", tree.root.minKey())
@@ -521,33 +740,45 @@ func (tree *Bptree) Print() {
 	fmt.Println()
 }
 
-/*/** Test Driver: Uncomment to test
+/*** Test Driver: Uncomment to test
 func main() {
-	bt, err := New(3)
+	bt, err := New(4)
 	if  err != nil {
 		fmt.Println(err)
 		return
 	}
 
-	k := rand.Uint32()
-	for i:=0; i < 20; i++ {
-		bt.Insert(Item(k), "val"+strconv.Itoa(i))
-		k = rand.Uint32()
+	//k := rand.Uint32()
+	for i:=0; i < 64; i++ {
+		bt.Insert(Item(i), "val"+strconv.Itoa(i))
+	//	k = rand.Uint32()
 	}
 
 	bt.Print()
-	if len(os.Args) < 2 {
-		fmt.Println("Usage:./bptree <some key>")
-		return
-	}
-	ii, err := strconv.Atoi(os.Args[1])
+
+	scan := bufio.NewScanner(os.Stdin)
+	fmt.Println("Enter Get key: ")
+	scan.Scan()
+	ii, err := strconv.Atoi(scan.Text())
 	if err != nil {
-		fmt.Println("Arg", os.Args[1], " invalid")
+		return
 	}
 	fmt.Println("Get:key=", ii, "val=", bt.Get(Item(ii)))
 	fmt.Println("GetNext", 3, "from", ii, ":", bt.GetNextN(Item(ii), 3))
-	_, retval := bt.Del(Item(ii))
-	fmt.Println("Del:key=", ii, "val=", retval)
+
 	bt.Print()
+
+	for ;; {
+		fmt.Println("Enter Del key: ")
+		scan.Scan()
+		ii, err = strconv.Atoi(scan.Text())
+		if err != nil {
+			return
+		}
+		_, retval := bt.Del(Item(ii))
+		fmt.Println("Del:key=", ii, "val=", retval)
+		bt.Print()
+	}
+	return
 }
 */
