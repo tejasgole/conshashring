@@ -9,7 +9,8 @@ package bptree
 import (
 	"errors"
 	"fmt"
-//	"math/rand"	//Uncomment for test
+	//"math/rand"	//Uncomment for test
+	"io"
 	"strconv"
 //	"os"		//Uncomment for test
 //	"bufio"		//Uncomment for test
@@ -633,41 +634,41 @@ func (n *node) split() *node {
 }
 
 // print Item
-func (a Item) Print() {
-	fmt.Printf("%s", strconv.AppendUint(make([]byte, 0), uint64(a), 10))
+func (a Item) Print(w io.Writer) {
+	fmt.Fprintf(w, "%s", strconv.AppendUint(make([]byte, 0), uint64(a), 10))
 }
 
 // print the tree BFS nodes
-func (n *node) printnode() {
+func (n *node) printnode(w io.Writer) {
 	if !n.leaf {
 		if n.parent == nil {
-			fmt.Printf("\nl%d:", n.level)
-			fmt.Println(n.keys)
-			fmt.Printf("\nl%d:", n.level-1)
+			fmt.Fprintf(w, "\nl%d:", n.level)
+			fmt.Fprintln(w, n.keys)
+			fmt.Fprintf(w, "\nl%d:", n.level-1)
 		} else {
-			fmt.Printf("\nl%d:", n.level-1)
+			fmt.Fprintf(w, "\nl%d:", n.level-1)
 		}
 
 		if !n.children[0].leaf {
 			for i:=0; i < len(n.children); i++ {
 				if i < len(n.children)-1 {
-					fmt.Printf("%d, ", n.children[i].keys)
+					fmt.Fprintf(w, "%d, ", n.children[i].keys)
 				} else {
-					fmt.Printf("%d\n", n.children[i].keys)
+					fmt.Fprintf(w, "%d\n", n.children[i].keys)
 				}
 			}
 		}
 		for i:=0; i < len(n.children); i++ {
-			n.children[i].printnode()
+			n.children[i].printnode(w)
 		}
 		return
 	} else {
-		fmt.Printf("[ ")
+		fmt.Fprintf(w, "[ ")
 		for i:=0; i < len(n.keys); i++ {
-			n.keys[i].Print()
-			fmt.Printf(":%s ", n.vals[i])
+			n.keys[i].Print(w)
+			fmt.Fprintf(w, ":%s ", n.vals[i])
 		}
-		fmt.Printf(" ] ")
+		fmt.Fprintf(w, " ] ")
 	}
 }
 
@@ -685,7 +686,7 @@ func New(degree int) (*Bptree, error) {
 
 // insert into tree
 func (tree *Bptree) Insert(key Item, value string) Item {
-	fmt.Println("Inserting", key, value)
+	//fmt.Println("Inserting", key, value)
 	if tree.root == nil {
 		tree.root = new(node)
 		tree.root.leaf = true
@@ -697,7 +698,7 @@ func (tree *Bptree) Insert(key Item, value string) Item {
 	} else {
 		tree.root = tree.root.insert(key, value, nil, nil, tree.degree)
 	}
-	tree.Print()
+	//tree.Print()
 	return key
 }
 
@@ -729,15 +730,15 @@ func (tree *Bptree) GetNextN (key Item, N int) []string {
 }
 
 // print the whole tree
-func (tree *Bptree) Print() {
+func (tree *Bptree) Print(w io.Writer) {
 	if tree.root == nil {
-		fmt.Println("Empty")
+		fmt.Fprintln(w, "Empty")
 		return
 	}
-	fmt.Println("Min:", tree.root.minKey())
-	fmt.Println("Max:", tree.root.maxKey())
-	tree.root.printnode()
-	fmt.Println()
+	fmt.Fprintln(w, "Min:", tree.root.minKey())
+	fmt.Fprintln(w, "Max:", tree.root.maxKey())
+	tree.root.printnode(w)
+	fmt.Fprintln(w)
 }
 
 /*** Test Driver: Uncomment to test
@@ -749,12 +750,12 @@ func main() {
 	}
 
 	//k := rand.Uint32()
-	for i:=0; i < 64; i++ {
+	for i:=0; i < 5; i++ {
 		bt.Insert(Item(i), "val"+strconv.Itoa(i))
 	//	k = rand.Uint32()
 	}
 
-	bt.Print()
+	bt.Print(os.Stdout)
 
 	scan := bufio.NewScanner(os.Stdin)
 	fmt.Println("Enter Get key: ")
@@ -766,7 +767,7 @@ func main() {
 	fmt.Println("Get:key=", ii, "val=", bt.Get(Item(ii)))
 	fmt.Println("GetNext", 3, "from", ii, ":", bt.GetNextN(Item(ii), 3))
 
-	bt.Print()
+	bt.Print(os.Stdout)
 
 	for ;; {
 		fmt.Println("Enter Del key: ")
@@ -777,7 +778,7 @@ func main() {
 		}
 		_, retval := bt.Del(Item(ii))
 		fmt.Println("Del:key=", ii, "val=", retval)
-		bt.Print()
+		bt.Print(os.Stdout)
 	}
 	return
 }

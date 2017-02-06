@@ -95,7 +95,7 @@ func printHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	//fmt.Println(m[2])
-	btree.Print()
+	btree.Print(w)
 }
 
 func getNHandler(w http.ResponseWriter, r *http.Request) {
